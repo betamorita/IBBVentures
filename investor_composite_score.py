@@ -14,11 +14,11 @@ OUT_DIR    = SCRIPT_DIR
 # ── FILTER OPTIONS ────────────────────────────────────────────────────────────
 # Filter by Company State ("Company State" column). Set to None to include all.
 # Examples: "Berlin", "Bayern", "Nordrhein-Westfalen", None
-FILTER_STATE = "Berlin"
+FILTER_STATE = None
 
 # Filter by publication year ("Date Publication" column). Set to None to include all.
 # Examples: 2023, 2024, None  —  or a list: [2023, 2024]
-FILTER_YEAR  = [2025, 2026]
+FILTER_YEAR  = [2021, 2022, 2023, 2024, 2025]
 # ─────────────────────────────────────────────────────────────────────────────
 # Build output filename from filter values
 _state_tag = "_" + "_".join([FILTER_STATE] if isinstance(FILTER_STATE, str) else FILTER_STATE) if FILTER_STATE else ""
@@ -91,16 +91,14 @@ print("Calculating amount-weighted PageRank...")
 pagerank = nx.pagerank(G, weight="weight", max_iter=1000, alpha=0.85)
 
 print("Calculating betweenness centrality (unweighted — bridge detection)...")
-betweenness = nx.betweenness_centrality(G, normalized=True)  # unweighted: finds structural bridges
+# Approximate with k=500 pivot samples for speed on large graphs
+_k_betw = min(500, G.number_of_nodes())
+betweenness = nx.betweenness_centrality(G, normalized=True, k=_k_betw)
 
 print("Calculating Burt's Constraint (structural holes)...")
 # Low constraint = many structural holes = investor bridges otherwise unconnected clusters
 _constraint_raw = nx.constraint(G, weight="weight")
 burt_constraint = {n: (v if v == v else 1.0) for n, v in _constraint_raw.items()}  # replace NaN with 1.0
-
-print("Calculating Clustering Coefficient (network diversity)...")
-# Low clustering = investor connects diverse groups (not always same clique)
-clustering = nx.clustering(G, weight="weight")
 
 print("Detecting communities (Louvain) for Participation Coefficient...")
 # Participation Coefficient: how much does an investor connect across different communities?
@@ -175,29 +173,26 @@ stats["pagerank"]       = stats["Investor Affiliation"].map(pagerank)
 stats["betweenness"]    = stats["Investor Affiliation"].map(betweenness)
 # Burt: invert so that HIGH score = many structural holes (good)
 stats["burt_holes"]     = 1.0 - stats["Investor Affiliation"].map(burt_constraint)
-# Clustering: invert so that HIGH score = diverse connections (good)
-stats["clustering_inv"] = 1.0 - stats["Investor Affiliation"].map(clustering)
 stats["participation"]  = stats["Investor Affiliation"].map(participation)
 
 def minmax(series):
     lo, hi = series.min(), series.max()
     return (series - lo) / (hi - lo) if hi > lo else series * 0.0
 
-metrics = ["pagerank", "betweenness", "burt_holes", "clustering_inv",
+metrics = ["pagerank", "betweenness", "burt_holes",
            "participation", "total_capital", "unique_companies", "avg_round_size", "lead_rounds"]
 for m in metrics:
     stats[f"{m}_norm"] = minmax(stats[m])
 
 # ── Composite weights (total = 1.0) ───────────────────────────────────────────
 #
-#  Netzwerk-Zentralität       (50%)
+#  Netzwerk-Zentralität       (47%)
 #    PageRank          0.20  — Position im Netzwerk, kapitalgewichtet
 #    Betweenness       0.15  — Brückenfunktion zwischen Clustern
-#    Burt's Holes      0.10  — Strukturelle Lücken / Informationsvorteil
-#    Clustering inv.   0.05  — Netzwerk-Diversität (nicht immer dieselbe Clique)
+#    Burt's Holes      0.12  — Strukturelle Lücken / Informationsvorteil
 #
-#  Community-Vernetzung       (15%)
-#    Participation     0.15  — Verbindungen über Community-Grenzen hinweg
+#  Community-Vernetzung       (18%)
+#    Participation     0.18  — Verbindungen über Community-Grenzen hinweg
 #
 #  Fundamentaldaten           (35%)
 #    Total Capital     0.12  — Gesamtkapital
@@ -208,9 +203,8 @@ for m in metrics:
 WEIGHTS = {
     "pagerank_norm":        0.20,
     "betweenness_norm":     0.15,
-    "burt_holes_norm":      0.10,
-    "clustering_inv_norm":  0.05,
-    "participation_norm":   0.15,
+    "burt_holes_norm":      0.12,
+    "participation_norm":   0.18,
     "total_capital_norm":   0.12,
     "unique_companies_norm":0.10,
     "avg_round_size_norm":  0.06,
@@ -231,7 +225,6 @@ display_cols = [
     "pagerank",
     "betweenness",
     "burt_holes",
-    "clustering_inv",
     "participation",
     "total_capital",
     "unique_companies",
