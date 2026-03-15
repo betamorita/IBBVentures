@@ -6,6 +6,7 @@ from collections import defaultdict
 
 import pandas as pd
 import networkx as nx
+import igraph as ig
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH   = os.path.join(SCRIPT_DIR, "Investments Export.csv")
@@ -86,24 +87,28 @@ for (a, b), w in edge_weight.items():
 
 print(f"  Nodes: {G.number_of_nodes():,}  |  Edges: {G.number_of_edges():,}")
 
-# ── 5. Network metrics ───────────────────────────────────────────────────────
+# ── 5. Network metrics (igraph C backend for speed) ──────────────────────────
+print("Converting graph to igraph...")
+g = ig.Graph.from_networkx(G)
+_names = g.vs["_nx_name"]  # node names indexed by vertex id
+
 print("Calculating amount-weighted PageRank...")
-pagerank = nx.pagerank(G, weight="weight", max_iter=1000, alpha=0.85)
+_pr = g.pagerank(weights="weight", damping=0.85)
+pagerank = dict(zip(_names, _pr))
 
 print("Calculating betweenness centrality (unweighted — bridge detection)...")
-# Approximate with k=500 pivot samples for speed on large graphs
-_k_betw = min(500, G.number_of_nodes())
-betweenness = nx.betweenness_centrality(G, normalized=True, k=_k_betw)
+_bt = g.betweenness(directed=False)  # exact, no sampling needed with C backend
+_n = g.vcount()
+_norm = (_n - 1) * (_n - 2) / 2 if _n > 2 else 1.0  # NetworkX-compatible normalisation
+betweenness = dict(zip(_names, [b / _norm for b in _bt]))
 
 print("Calculating Burt's Constraint (structural holes)...")
-# Low constraint = many structural holes = investor bridges otherwise unconnected clusters
-_constraint_raw = nx.constraint(G, weight="weight")
-burt_constraint = {n: (v if v == v else 1.0) for n, v in _constraint_raw.items()}  # replace NaN with 1.0
+_bc = g.constraint(weights="weight")
+burt_constraint = {name: (v if v == v else 1.0) for name, v in zip(_names, _bc)}
 
 print("Detecting communities (Louvain) for Participation Coefficient...")
-# Participation Coefficient: how much does an investor connect across different communities?
-_communities = nx.community.louvain_communities(G, weight="weight", seed=42)
-comm_map = {node: i for i, comm in enumerate(_communities) for node in comm}
+_communities_ig = g.community_multilevel(weights="weight")
+comm_map = {_names[v]: c for v, c in enumerate(_communities_ig.membership)}
 
 def _participation_coefficient(G, comm_map, weight="weight"):
     result = {}
@@ -119,7 +124,7 @@ def _participation_coefficient(G, comm_map, weight="weight"):
     return result
 
 participation = _participation_coefficient(G, comm_map)
-print(f"  Communities detected: {len(_communities)}")
+print(f"  Communities detected: {len(_communities_ig)}")
 
 # ── 6. Fundamental investor stats
 print("Calculating fundamental stats...")
